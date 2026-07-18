@@ -1,0 +1,19 @@
+[
+  ["Ano", "ano", "int"],
+  ["Mês", "mes", "int"],
+  ["Grupo Econômico", "grupo_economico", "string"],
+  ["Empresa", "empresa", "string"],
+  ["CNPJ", "cnpj", "string"],
+  ["Porte da Prestadora", "porte_prestadora", "string"],
+  ["UF", "uf", "string"],
+  ["Município", "municipio", "string"],
+  ["Código IBGE Município", "codigo_ibge_municipio", "string"],
+  ["Código Nacional", "codigo_nacional", "string"],
+  ["Código Nacional (Chip)", "codigo_nacional_chip", "string"],
+  ["Modalidade de Cobrança", "modalidade_cobranca", "string"],
+  ["Tecnologia", "tecnologia", "string"],
+  ["Tecnologia Geração", "tecnologia_geracao", "string"],
+  ["Tipo de Pessoa", "tipo_pessoa", "string"],
+  ["Tipo de Produto", "tipo_produto", "string"],
+  ["Acessos", "acessos", "long"]
+]

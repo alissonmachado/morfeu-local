@@ -4,7 +4,7 @@
 COMPOSE ?= docker compose
 DOCKER  ?= docker
 
-.PHONY: help up down build logs pipeline produce ingest dump trino mongo ps clean load-acessos load-velocidade
+.PHONY: help up down build logs pipeline produce ingest dump trino mongo ps clean load-acessos load-velocidade load-movel load-tv
 
 help:
 	@echo "morfeu — ambiente local"
@@ -17,6 +17,8 @@ help:
 	@echo "  make dump      Inspeciona o detalhamento do conjunto (dados.gov.br)"
 	@echo "  make load-acessos     Carga em lote: acessos banda larga fixa (Iceberg)"
 	@echo "  make load-velocidade  Carga em lote: velocidade contratada SCM (Iceberg)"
+	@echo "  make load-movel       Carga em lote: acessos telefonia movel (Iceberg)"
+	@echo "  make load-tv          Carga em lote: acessos TV por assinatura (Iceberg)"
 	@echo "  make trino     Abre o cliente SQL do Trino"
 	@echo "  make mongo     Abre o mongosh na coleção de auditoria"
 	@echo "  make logs      Segue os logs de todos os serviços"
@@ -80,4 +82,21 @@ load-velocidade:
 	  -e LOADER_ZIP_PATH=/raw/velocidade_contratada_scm.zip \
 	  -e LOADER_CSV_MEMBER=Velocidade_Contratada_SCM.csv \
 	  -e LOADER_TABLE=morfeu.velocidade_contratada_scm \
+	  loader
+
+load-movel:
+	$(COMPOSE) run --rm --build \
+	  -e LOADER_SCHEMA_FILE=/app/schemas/acessos_telefonia_movel.json \
+	  -e LOADER_ZIP_PATH=/raw/acessos_telefonia_movel.zip \
+	  -e LOADER_CSV_MEMBER=Acessos_Telefonia_Movel_2026_1S.csv \
+	  -e LOADER_TABLE=morfeu.acessos_telefonia_movel \
+	  -e LOADER_CHUNK_SIZE=50000 \
+	  loader
+
+load-tv:
+	$(COMPOSE) run --rm --build \
+	  -e LOADER_SCHEMA_FILE=/app/schemas/acessos_tv_assinatura.json \
+	  -e LOADER_ZIP_PATH=/raw/acessos_tv_por_assinatura.zip \
+	  -e LOADER_CSV_MEMBER=Acessos_TV_Assinatura.csv \
+	  -e LOADER_TABLE=morfeu.acessos_tv_assinatura \
 	  loader

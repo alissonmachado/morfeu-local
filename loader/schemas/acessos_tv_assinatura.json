@@ -1,0 +1,16 @@
+[
+  ["Ano", "ano", "int"],
+  ["Mês", "mes", "int"],
+  ["Grupo Econômico", "grupo_economico", "string"],
+  ["Empresa", "empresa", "string"],
+  ["CNPJ", "cnpj", "string"],
+  ["Porte da Prestadora", "porte_prestadora", "string"],
+  ["UF", "uf", "string"],
+  ["Município", "municipio", "string"],
+  ["Código IBGE Município", "codigo_ibge_municipio", "string"],
+  ["Tecnologia", "tecnologia", "string"],
+  ["Meio de Acesso", "meio_acesso", "string"],
+  ["Tipo de Pessoa", "tipo_pessoa", "string"],
+  ["Tipo Acesso TV", "tipo_acesso_tv", "string"],
+  ["Acessos", "acessos", "long"]
+]

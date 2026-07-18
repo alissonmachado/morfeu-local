@@ -46,9 +46,10 @@ Casos de uso que essa base de dados unificada permite, hoje:
   ou avaliação de ativos de rede.
 
 Este repositório é a prova de conceito da arquitetura, não o produto: os
-volumes e o recorte temporal (um ano de acessos, 4 anos de velocidade
-contratada, uma amostra de estações) foram escolhidos para caber num ambiente
-Docker local (ver [Rancher Desktop](#rancher-desktop)). A mesma stack
+volumes e o recorte temporal (um ano de banda larga fixa, um semestre de
+telefonia móvel, 4 anos de velocidade contratada, o histórico integral de TV
+por assinatura, uma amostra de estações) foram escolhidos para caber num
+ambiente Docker local (ver [Rancher Desktop](#rancher-desktop)). A mesma stack
 — Kafka, Flink, Iceberg, Trino — é o desenho de referência usado em
 lakehouses de streaming em produção; escalar significa trocar o ambiente de
 execução (Kubernetes gerenciado, warehouse Iceberg com armazenamento de
@@ -123,13 +124,17 @@ para o problema (ver [Decisões de projeto](#decisões-de-projeto-e-aprendizados
 
 ## Resultados-chave
 
-- **`topologia_rede`**: 506 eventos de nós de rede (500 estações reais da
-  ANATEL + 6 eventos sintéticos de teste), streaming via Flink.
+- **`topologia_rede`**: **1.006 eventos** de nós de rede (estações reais da
+  ANATEL + eventos sintéticos de teste), streaming via Flink.
 - **`acessos_banda_larga_fixa`**: **3.413.808 linhas** (ano 2026, recorte mais
   recente de uma série que a ANATEL disponibiliza desde 2007).
 - **`velocidade_contratada_scm`**: **5.789.372 linhas** (2017-2020, arquivo
   único integral).
-- ~9,2 milhões de linhas analíticas carregadas em lote, direto no Iceberg via
+- **`acessos_telefonia_movel`**: **11.871.067 linhas** (2026, 1º semestre —
+  recorte mais recente de uma série que vai de 2005 a 2026).
+- **`acessos_tv_assinatura`**: **4.584.455 linhas** (arquivo único integral,
+  todos os anos disponíveis).
+- ~25,6 milhões de linhas analíticas carregadas em lote, direto no Iceberg via
   `pyiceberg`, sem passar por Kafka — ver por quê na seção de decisões.
 
 ## Pré-requisitos
@@ -242,15 +247,22 @@ do token: https://dados.gov.br/dados/conteudo/como-acessar-a-api-do-portal-de-da
 
 ## Carga em lote: indicadores agregados da ANATEL
 
-Os painéis de **acessos de banda larga fixa** e **velocidade contratada** da
-ANATEL não são eventos de topologia — são estatísticas agregadas mensais por
-operadora/UF/município, distribuídas em arquivos grandes (a série de acessos
-tem um `.csv` por ano, de 2007 a 2026; o de 2026 sozinho tem ~500 MB e 3,4M
-linhas). Por isso entram por uma trilha própria, em lote, sem Kafka.
+Os painéis de **acessos de banda larga fixa**, **velocidade contratada**,
+**telefonia móvel** e **TV por assinatura** da ANATEL não são eventos de
+topologia — são estatísticas agregadas mensais por operadora/UF/município,
+distribuídas em arquivos grandes (a série de telefonia móvel, por exemplo,
+tem um `.csv` por semestre desde 2005; só o 1º semestre de 2026 tem ~1,5 GB e
+quase 12M linhas). Por isso entram por uma trilha própria, em lote, sem Kafka.
 
-1. Baixe manualmente os `.zip` nos painéis da ANATEL:
+1. Baixe manualmente os `.zip` nos painéis da ANATEL (busque por "acessos" no
+   portal https://informacoes.anatel.gov.br/paineis/ — os dois primeiros
+   links abaixo foram confirmados nesta sessão; os de telefonia móvel e TV
+   por assinatura seguem o mesmo padrão de portal, mas confirme o link exato
+   antes de usar):
    - https://informacoes.anatel.gov.br/paineis/acessos/banda-larga-fixa
    - https://informacoes.anatel.gov.br/paineis/acessos/velocidade-contratada-banda-larga-fixa
+   - Telefonia móvel (`acessos_telefonia_movel.zip`)
+   - TV por assinatura (`acessos_tv_por_assinatura.zip`)
 
 2. No `.env`, aponte `ANATEL_RAW_DIR` para a pasta onde os `.zip` ficaram (ex.:
    sua pasta de Downloads). É montada como somente-leitura em `/raw` dentro do
@@ -260,12 +272,16 @@ linhas). Por isso entram por uma trilha própria, em lote, sem Kafka.
    ```bash
    make load-acessos       # acessos_banda_larga_fixa (ano mais recente do zip)
    make load-velocidade    # velocidade_contratada_scm (arquivo único)
+   make load-movel         # acessos_telefonia_movel (semestre mais recente)
+   make load-tv            # acessos_tv_assinatura (arquivo único)
    ```
    Cada linha do CSV é escrita direto na tabela Iceberg correspondente via
    `pyiceberg`, em chunks (não carrega o arquivo inteiro em memória). O schema
    de cada dataset (mapeamento coluna → campo → tipo) fica versionado em
    `loader/schemas/*.json` — se a ANATEL mudar o layout do CSV, é só editar o
-   JSON, não o código Python.
+   JSON, não o código Python. Para os datasets maiores (telefonia móvel em
+   especial), pare `trino` e o `flink` antes de rodar a carga — ver
+   [Rancher Desktop](#rancher-desktop).
 
 4. Para testar com poucas linhas antes de rodar o arquivo inteiro (recomendado
    ao trocar de dataset ou schema):
@@ -324,6 +340,8 @@ UIs deste ambiente local): http://localhost:8091
 | `make dump`           | inspeciona o detalhamento de um conjunto          |
 | `make load-acessos`   | carga em lote: acessos banda larga fixa          |
 | `make load-velocidade`| carga em lote: velocidade contratada SCM         |
+| `make load-movel`     | carga em lote: acessos telefonia móvel           |
+| `make load-tv`        | carga em lote: acessos TV por assinatura         |
 | `make trino`          | abre o cliente SQL do Trino                      |
 | `make mongo`          | consulta a coleção de auditoria                  |
 | `make ps`             | status dos containers                            |
@@ -363,7 +381,9 @@ morfeu/
 │   ├── carga_lote.py
 │   └── schemas/                # schema declarativo por dataset (JSON)
 │       ├── acessos_banda_larga_fixa.json
-│       └── velocidade_contratada_scm.json
+│       ├── velocidade_contratada_scm.json
+│       ├── acessos_telefonia_movel.json
+│       └── acessos_tv_assinatura.json
 ├── trino/catalog/iceberg.properties
 ├── scripts/                   # submit_pipeline.sh, produce_sample.sh
 └── data/sample_events.json
@@ -382,6 +402,10 @@ morfeu/
 - **Kafka.** Na rede Docker use `kafka:9092`; do host, `localhost:29092`.
 - **Job do Flink não sobrevive a restart do container.** Não há savepoint
   configurado; se `flink-jobmanager` reiniciar, rode `make pipeline` de novo.
+  A fonte Kafka usa `scan.startup.mode = group-offsets` com
+  `properties.group.id = morfeu-flink-v2`: um resubmit resume de onde o
+  consumer group parou, em vez de reprocessar o tópico inteiro (ver o bug de
+  duplicação nas [Decisões de projeto](#decisões-de-projeto-e-aprendizados)).
 
 ## Decisões de projeto e aprendizados
 
@@ -449,6 +473,23 @@ tamanho do chunk; a correção durável é aumentar a memória alocada à VM. Fi
 documentado em [Rancher Desktop](#rancher-desktop) para não repetir a mesma
 investigação.
 
+**A duplicação silenciosa causada por `earliest-offset`.** Toda vez que
+cancelei e resubmeti o job do Flink nesta sessão (por causa do bug do
+`client.region`, duas vezes), a fonte Kafka usava
+`scan.startup.mode = earliest-offset` — ou seja, cada resubmit reprocessava o
+tópico `topologia.eventos` inteiro desde o começo, sem saber que aquelas
+mensagens já tinham sido consumidas antes. Resultado: a tabela
+`topologia_rede`, que devia ter ~500 eventos únicos, acumulou 1.512 linhas
+com metade duplicada. Só percebi porque comparei a contagem antes/depois de
+mexer em outra coisa e o número não batia com o que eu esperava — de novo,
+"o número está diferente do que eu esperava" foi o sinal de alerta, não um
+erro explícito. A correção foi trocar para `scan.startup.mode = group-offsets`
+com um novo `group.id` (`morfeu-flink-v2`): resubmits agora resumem de onde o
+consumer group parou, em vez de reler tudo. O aprendizado: num pipeline que já
+foi cancelado/resubmetido manualmente mais de uma vez sem savepoint, é sensato
+conferir contagens e duplicatas antes de considerar os dados confiáveis —
+"o job está RUNNING" não é o mesmo que "os dados estão corretos".
+
 **Um problema de rede que não era nem do Docker nem do WSL.** Antes de
 qualquer um desses bugs, o `docker compose build` do Flink começou a falhar
 com timeout de `i/o timeout` puxando a imagem base do Docker Hub — depois de
@@ -463,9 +504,9 @@ esperar, não continuar mexendo em Docker/WSL à toa.
 
 Dados do **Portal Brasileiro de Dados Abertos** (dados.gov.br) e dos
 **painéis públicos da ANATEL** (estações licenciadas, acessos de banda larga
-fixa, velocidade contratada), mantidos pela CGU/SGD e pela própria ANATEL.
-Disponibilização amparada pela Lei nº 12.527/2011 (LAI) e pelo Decreto nº
-8.777/2016 (Política de Dados Abertos).
+fixa, velocidade contratada, telefonia móvel, TV por assinatura), mantidos
+pela CGU/SGD e pela própria ANATEL. Disponibilização amparada pela Lei nº
+12.527/2011 (LAI) e pelo Decreto nº 8.777/2016 (Política de Dados Abertos).
 
 ## Licença
 

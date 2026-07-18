@@ -67,8 +67,9 @@ CREATE TABLE default_catalog.default_database.kafka_topologia (
   'connector'                     = 'kafka',
   'topic'                         = 'topologia.eventos',
   'properties.bootstrap.servers'  = 'kafka:9092',
-  'properties.group.id'           = 'morfeu-flink',
-  'scan.startup.mode'             = 'earliest-offset',
+  'properties.group.id'           = 'morfeu-flink-v2',
+  'scan.startup.mode'             = 'group-offsets',
+  'properties.auto.offset.reset'  = 'earliest',
   'format'                        = 'json',
   'json.timestamp-format.standard'= 'ISO-8601',
   'json.ignore-parse-errors'      = 'true'
