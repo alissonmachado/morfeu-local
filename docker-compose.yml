@@ -1,0 +1,274 @@
+# =====================================================================
+#  morfeu — ambiente local
+#  Kafka -> Flink -> Iceberg (REST + MinIO/S3) -> Trino
+#                          \-> MongoDB (auditoria da mensagem bruta)
+# =====================================================================
+name: morfeu
+
+networks:
+  morfeu_net:
+    driver: bridge
+
+volumes:
+  minio_data:
+  mongo_data:
+
+services:
+
+  # ------------------------------------------------------------------
+  # Storage S3 (MinIO) — guarda os data files das tabelas Iceberg
+  # ------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: morfeu-minio
+    hostname: minio
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password
+      MINIO_DOMAIN: minio
+    ports:
+      - "9000:9000"   # API S3
+      - "9001:9001"   # Console web
+    command: ["server", "/data", "--console-address", ":9001"]
+    volumes:
+      - minio_data:/data
+    networks:
+      morfeu_net:
+        aliases:
+          - warehouse.minio
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Cria o bucket "warehouse" no MinIO e encerra (job one-shot)
+  minio-init:
+    image: minio/mc:latest
+    container_name: morfeu-minio-init
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 admin password; do sleep 1; done;
+      mc mb -p local/warehouse || true;
+      echo 'Bucket warehouse pronto';
+      exit 0;
+      "
+    networks:
+      - morfeu_net
+
+  # ------------------------------------------------------------------
+  # Catálogo Iceberg REST (apache/iceberg-rest-fixture)
+  #   Metadados do catálogo em SQLite in-memory (ver nota no README).
+  # ------------------------------------------------------------------
+  iceberg-rest:
+    image: apache/iceberg-rest-fixture:1.10.1
+    container_name: morfeu-iceberg-rest
+    hostname: iceberg-rest
+    depends_on:
+      - minio-init
+    environment:
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      AWS_REGION: us-east-1
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+    ports:
+      - "8181:8181"
+    networks:
+      - morfeu_net
+
+  # ------------------------------------------------------------------
+  # Kafka (KRaft, single-node) — barramento de eventos de topologia
+  # ------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.9.1
+    container_name: morfeu-kafka
+    hostname: kafka
+    ports:
+      - "9092:9092"     # listener interno (rede docker)
+      - "29092:29092"   # listener para acesso a partir do host
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - morfeu_net
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # Cria o tópico de eventos e encerra (job one-shot)
+  kafka-init:
+    image: apache/kafka:3.9.1
+    container_name: morfeu-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic topologia.eventos --partitions 3 --replication-factor 1; echo 'Topico topologia.eventos pronto'
+    networks:
+      - morfeu_net
+
+  # ------------------------------------------------------------------
+  # Flink — JobManager + TaskManager (imagem custom com jars Iceberg)
+  # ------------------------------------------------------------------
+  flink-jobmanager:
+    build:
+      context: ./flink
+    image: morfeu/flink:1.20-iceberg
+    container_name: morfeu-flink-jobmanager
+    hostname: flink-jobmanager
+    depends_on:
+      - iceberg-rest
+      - kafka-init
+    ports:
+      - "8081:8081"   # Flink Web UI
+    command: jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        state.backend.type: hashmap
+        rest.flamegraph.enabled: true
+    volumes:
+      - ./flink/sql:/opt/sql
+    networks:
+      - morfeu_net
+
+  flink-taskmanager:
+    build:
+      context: ./flink
+    image: morfeu/flink:1.20-iceberg
+    container_name: morfeu-flink-taskmanager
+    depends_on:
+      - flink-jobmanager
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        state.backend.type: hashmap
+    networks:
+      - morfeu_net
+
+  # ------------------------------------------------------------------
+  # MongoDB — persistência da mensagem bruta (auditoria)
+  # ------------------------------------------------------------------
+  mongodb:
+    image: mongo:7
+    container_name: morfeu-mongodb
+    hostname: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - morfeu_net
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 })"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Consumidor Kafka -> MongoDB que grava o payload bruto para auditoria
+  audit-consumer:
+    build:
+      context: ./audit
+    image: morfeu/audit-consumer:latest
+    container_name: morfeu-audit-consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: topologia.eventos
+      KAFKA_GROUP: morfeu-audit
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB: morfeu
+      MONGO_COLLECTION: topologia_raw
+    restart: on-failure
+    networks:
+      - morfeu_net
+
+  # ------------------------------------------------------------------
+  # Ingestor dados.gov.br — consome a API pública, mapeia estações da
+  #   ANATEL para eventos de topologia e publica no Kafka. Job one-shot
+  #   (roda sob demanda: `make ingest`).
+  # ------------------------------------------------------------------
+  dadosgov-producer:
+    build:
+      context: ./producer
+    image: morfeu/dadosgov-producer:latest
+    container_name: morfeu-dadosgov-producer
+    profiles: ["ingest"]     # não sobe no `up` padrão; use `make ingest`
+    depends_on:
+      kafka:
+        condition: service_healthy
+    env_file:
+      - .env
+    networks:
+      - morfeu_net
+
+  # ------------------------------------------------------------------
+  # Carga em lote de datasets analíticos ANATEL (acessos banda larga fixa,
+  # velocidade contratada) direto no Iceberg via pyiceberg. São dados
+  # históricos mensais (não streaming) e em volume grande, então não passam
+  # pelo Kafka/Flink — job one-shot, parametrizado por env var (make
+  # load-acessos / make load-velocidade).
+  # ------------------------------------------------------------------
+  loader:
+    build:
+      context: ./loader
+    image: morfeu/loader:latest
+    container_name: morfeu-loader
+    profiles: ["load"]     # não sobe no `up` padrão; use `make load-*`
+    depends_on:
+      - iceberg-rest
+    environment:
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: admin
+      S3_SECRET_KEY: password
+      S3_REGION: us-east-1
+      ICEBERG_REST_URI: http://iceberg-rest:8181
+      ICEBERG_WAREHOUSE: s3://warehouse/
+    volumes:
+      - ${ANATEL_RAW_DIR}:/raw:ro
+    networks:
+      - morfeu_net
+
+  # ------------------------------------------------------------------
+  # Trino — consulta analítica sobre as tabelas Iceberg
+  # ------------------------------------------------------------------
+  trino:
+    image: trinodb/trino:476
+    container_name: morfeu-trino
+    hostname: trino
+    depends_on:
+      - iceberg-rest
+    ports:
+      - "8080:8080"   # Trino Web UI / cliente
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog
+    networks:
+      - morfeu_net

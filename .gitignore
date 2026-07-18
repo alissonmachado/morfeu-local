@@ -1,0 +1,20 @@
+# Segredos / ambiente
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Dados locais / volumes
+warehouse/
+*.log
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/

@@ -1,0 +1,13 @@
+[
+  ["Ano", "ano", "int"],
+  ["Mês", "mes", "int"],
+  ["razao_social", "razao_social", "string"],
+  ["cnpj", "cnpj", "string"],
+  ["velocidade_contratada_mbps", "velocidade_contratada_mbps", "double"],
+  ["uf", "uf", "string"],
+  ["municipio", "municipio", "string"],
+  ["codigo_ibge", "codigo_ibge", "string"],
+  ["acessos", "acessos", "long"],
+  ["tipo", "tipo", "string"],
+  ["municipio_uf", "municipio_uf", "string"]
+]
