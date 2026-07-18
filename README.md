@@ -283,7 +283,15 @@ quase 12M linhas). Por isso entram por uma trilha própria, em lote, sem Kafka.
    especial), pare `trino` e o `flink` antes de rodar a carga — ver
    [Rancher Desktop](#rancher-desktop).
 
-4. Para testar com poucas linhas antes de rodar o arquivo inteiro (recomendado
+4. **Auditoria do raw.** Antes de processar, o loader copia o CSV
+   efetivamente lido (não o `.zip` inteiro — só o membro do ano/semestre
+   usado) para `s3://warehouse/raw/<tabela>/<arquivo>` no MinIO. É o
+   equivalente, para a trilha em lote, do que o `audit-consumer` +
+   `topologia_raw` fazem para a trilha de streaming: se a ANATEL atualizar o
+   dataset ou o `.zip` local for perdido, ainda existe uma cópia exata do que
+   foi carregado. Upload é idempotente (pula se o objeto já existir).
+
+5. Para testar com poucas linhas antes de rodar o arquivo inteiro (recomendado
    ao trocar de dataset ou schema):
    ```bash
    docker compose run --rm -e LOADER_MAX_ROWS=5000 \
@@ -293,6 +301,8 @@ quase 12M linhas). Por isso entram por uma trilha própria, em lote, sem Kafka.
      -e LOADER_TABLE=morfeu.velocidade_contratada_scm_teste \
      loader
    ```
+   Para só arquivar o raw de uma carga que já rodou (sem duplicar dados
+   reprocessando a tabela), use `LOADER_ARCHIVE_ONLY=true`.
 
 ## Consultas úteis (Trino)
 
@@ -406,6 +416,11 @@ morfeu/
   `properties.group.id = morfeu-flink-v2`: um resubmit resume de onde o
   consumer group parou, em vez de reprocessar o tópico inteiro (ver o bug de
   duplicação nas [Decisões de projeto](#decisões-de-projeto-e-aprendizados)).
+- **Auditoria do raw nas duas trilhas.** A trilha de streaming audita a
+  mensagem bruta no MongoDB (`topologia_raw`, via `audit-consumer`); a trilha
+  em lote audita o CSV original no MinIO (`s3://warehouse/raw/<tabela>/...`,
+  via `loader`). Mecanismos diferentes, mesmo propósito — replicar milhões
+  de linhas no Mongo só para auditoria não valeria o custo.
 
 ## Decisões de projeto e aprendizados
 

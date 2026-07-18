@@ -19,15 +19,26 @@ Config via variáveis de ambiente:
   LOADER_CHUNK_SIZE    linhas por lote lido/gravado (padrão 200000)
   LOADER_MAX_ROWS      corta a carga após N linhas (0 = sem limite; usar
                        para testar antes de rodar o arquivo inteiro)
+  LOADER_ARCHIVE_ONLY  "true" = só arquiva o raw no MinIO e sai, sem tocar na
+                       tabela Iceberg (para arquivar o raw de uma carga que
+                       já rodou antes, sem duplicar dados por reprocessar)
+
+Antes de processar, o arquivo original (.zip ou .csv, do jeito que veio da
+ANATEL) é copiado para s3://warehouse/raw/<tabela>/<nome_do_arquivo> — é a
+auditoria equivalente ao MongoDB da trilha de streaming (audit-consumer),
+já que esta trilha em lote nunca passa pelo Kafka. Idempotente: se o objeto
+já existir no MinIO, o upload é pulado.
 """
 import io
 import json
 import os
+import re
 import sys
 import zipfile
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.fs as pafs
 from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import DoubleType, IntegerType, LongType, NestedField, StringType
@@ -75,6 +86,49 @@ CATALOG_PROPS = {
 }
 
 
+def montar_s3_filesystem() -> pafs.S3FileSystem:
+    m = re.match(r"^(https?)://(.+)$", CATALOG_PROPS["s3.endpoint"])
+    scheme, host = (m.group(1), m.group(2)) if m else ("http", CATALOG_PROPS["s3.endpoint"])
+    return pafs.S3FileSystem(
+        access_key=CATALOG_PROPS["s3.access-key-id"],
+        secret_key=CATALOG_PROPS["s3.secret-access-key"],
+        endpoint_override=host,
+        scheme=scheme,
+        region=CATALOG_PROPS["s3.region"],
+    )
+
+
+def arquivar_raw():
+    """Copia só o CSV efetivamente lido (não o .zip inteiro, que pode ter
+    outros anos/semestres nunca tocados por esta carga)."""
+    with open(ZIP_PATH, "rb") as f:
+        eh_zip = f.read(4) == b"PK\x03\x04"
+    nome_arquivo = CSV_MEMBER if (eh_zip and CSV_MEMBER) else os.path.basename(ZIP_PATH)
+
+    fs = montar_s3_filesystem()
+    bucket = CATALOG_PROPS["warehouse"].replace("s3://", "").rstrip("/")
+    tabela_curta = TABLE_NAME.split(".", 1)[1]
+    destino = f"{bucket}/raw/{tabela_curta}/{nome_arquivo}"
+
+    info = fs.get_file_info(destino)
+    if info.type != pafs.FileType.NotFound:
+        print(f"[loader] Raw já arquivado em s3://{destino}, pulando upload.")
+        return
+
+    print(f"[loader] Arquivando original em s3://{destino}...")
+    if eh_zip:
+        origem_ctx = zipfile.ZipFile(ZIP_PATH).open(CSV_MEMBER, "r")
+    else:
+        origem_ctx = open(ZIP_PATH, "rb")
+    with origem_ctx as origem, fs.open_output_stream(destino) as saida:
+        while True:
+            bloco = origem.read(1 << 20)
+            if not bloco:
+                break
+            saida.write(bloco)
+    print("[loader] Raw arquivado.")
+
+
 def abrir_csv():
     with open(ZIP_PATH, "rb") as f:
         eh_zip = f.read(4) == b"PK\x03\x04"
@@ -108,6 +162,11 @@ def garantir_tabela(catalog):
 
 
 def main():
+    arquivar_raw()
+    if os.getenv("LOADER_ARCHIVE_ONLY", "").lower() in ("1", "true"):
+        print("[loader] LOADER_ARCHIVE_ONLY definido — não vou tocar na tabela.")
+        return
+
     catalog = load_catalog("morfeu", **CATALOG_PROPS)
     tabela = garantir_tabela(catalog)
 
