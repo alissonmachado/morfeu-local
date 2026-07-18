@@ -189,6 +189,22 @@ services:
       timeout: 5s
       retries: 5
 
+  # UI web para inspecionar a coleção de auditoria no MongoDB
+  mongo-express:
+    image: mongo-express:latest
+    container_name: morfeu-mongo-express
+    hostname: mongo-express
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongodb:27017/
+      ME_CONFIG_BASICAUTH: "false"
+    ports:
+      - "8091:8081"   # UI web (http://localhost:8091) — mongodb aqui não tem auth
+    networks:
+      - morfeu_net
+
   # Consumidor Kafka -> MongoDB que grava o payload bruto para auditoria
   audit-consumer:
     build:

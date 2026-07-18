@@ -309,6 +309,9 @@ make mongo
 docker exec -it morfeu-mongodb mongosh morfeu --eval "db.topologia_raw.countDocuments()"
 ```
 
+Ou pela UI web (**mongo-express**, sem autenticação — mesmo padrão das demais
+UIs deste ambiente local): http://localhost:8091
+
 ## Comandos (Makefile)
 
 | Comando               | Ação                                             |
@@ -336,6 +339,7 @@ docker exec -it morfeu-mongodb mongosh morfeu --eval "db.topologia_raw.countDocu
 | Flink UI     | http://localhost:8081          |
 | Trino        | http://localhost:8080          |
 | MongoDB      | localhost:27017                |
+| Mongo Express| http://localhost:8091          |
 | Kafka (host) | localhost:29092                |
 
 ## Estrutura do repositório
