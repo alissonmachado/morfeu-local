@@ -282,10 +282,12 @@ quase 12M linhas). Por isso entram por uma trilha própria, em lote, sem Kafka.
    JSON, não o código Python. Toda tabela ganha uma coluna `dt_ingestao`
    (timestamp de quando a linha foi carregada — mesmo metadado de
    rastreabilidade que o Flink grava em `topologia_rede`; o loader evolui o
-   schema automaticamente se a tabela já existir sem essa coluna, e linhas
-   carregadas antes dessa mudança ficam `NULL`, não um valor inventado). Para
-   os datasets maiores (telefonia móvel em especial), pare `trino` e o
-   `flink` antes de rodar a carga — ver [Rancher Desktop](#rancher-desktop).
+   schema automaticamente se a tabela já existir sem essa coluna). As 4
+   tabelas foram recarregadas do zero para que `dt_ingestao` refletisse o
+   momento real da carga em toda linha, em vez de um valor aproximado nas
+   linhas anteriores à existência da coluna. Para os datasets maiores
+   (telefonia móvel em especial), pare `trino` e o `flink` antes de rodar a
+   carga — ver [Rancher Desktop](#rancher-desktop).
 
 4. **Auditoria do raw.** Antes de processar, o loader copia o CSV
    efetivamente lido (não o `.zip` inteiro — só o membro do ano/semestre
@@ -370,7 +372,7 @@ UIs deste ambiente local): http://localhost:8091
 | Iceberg REST | http://localhost:8181          |
 | Flink UI     | http://localhost:8081          |
 | Trino        | http://localhost:8080          |
-| MongoDB      | localhost:27017                |
+| MongoDB      | http://localhost:27017         |
 | Mongo Express| http://localhost:8091          |
 | Kafka (host) | localhost:29092                |
 
@@ -518,6 +520,20 @@ de internet, não em nenhuma camada que eu controlo. Fica como lembrete de que
 nem todo erro de infraestrutura tem uma correção de configuração — às vezes o
 diagnóstico correto é "não é aqui", e a ação certa é trocar de rede ou
 esperar, não continuar mexendo em Docker/WSL à toa.
+
+**`UPDATE` interrompido, motor do Docker caindo no meio.** Ao tentar um
+backfill aproximado de `dt_ingestao` (timestamp do último snapshot do
+Iceberg) nas linhas carregadas antes da coluna existir, o motor de
+containers do Rancher Desktop caiu no meio do `UPDATE` — mais de uma vez,
+mesmo depois de reiniciar o WSL e o notebook. O lado bom: os `commits`
+atômicos do Iceberg se provaram na prática, não só na documentação — cada
+vez que verifiquei depois de o Docker voltar, a tabela estava exatamente
+como antes da tentativa (nenhuma linha parcialmente atualizada, nenhuma
+duplicata). Em vez de insistir num `UPDATE` aproximado contra uma
+infraestrutura instável, a decisão foi recarregar as 4 tabelas do zero: mais
+lento, mas dá `dt_ingestao` real em toda linha em vez de um valor aproximado,
+e não depende de uma operação longa sobrevivendo a um ambiente que estava
+caindo.
 
 ## Fonte de dados e base legal
 
