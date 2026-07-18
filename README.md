@@ -279,9 +279,13 @@ quase 12M linhas). Por isso entram por uma trilha própria, em lote, sem Kafka.
    `pyiceberg`, em chunks (não carrega o arquivo inteiro em memória). O schema
    de cada dataset (mapeamento coluna → campo → tipo) fica versionado em
    `loader/schemas/*.json` — se a ANATEL mudar o layout do CSV, é só editar o
-   JSON, não o código Python. Para os datasets maiores (telefonia móvel em
-   especial), pare `trino` e o `flink` antes de rodar a carga — ver
-   [Rancher Desktop](#rancher-desktop).
+   JSON, não o código Python. Toda tabela ganha uma coluna `dt_ingestao`
+   (timestamp de quando a linha foi carregada — mesmo metadado de
+   rastreabilidade que o Flink grava em `topologia_rede`; o loader evolui o
+   schema automaticamente se a tabela já existir sem essa coluna, e linhas
+   carregadas antes dessa mudança ficam `NULL`, não um valor inventado). Para
+   os datasets maiores (telefonia móvel em especial), pare `trino` e o
+   `flink` antes de rodar a carga — ver [Rancher Desktop](#rancher-desktop).
 
 4. **Auditoria do raw.** Antes de processar, o loader copia o CSV
    efetivamente lido (não o `.zip` inteiro — só o membro do ano/semestre

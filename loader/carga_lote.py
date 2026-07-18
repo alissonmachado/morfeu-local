@@ -35,13 +35,14 @@ import os
 import re
 import sys
 import zipfile
+from datetime import datetime, timezone
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.fs as pafs
 from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema
-from pyiceberg.types import DoubleType, IntegerType, LongType, NestedField, StringType
+from pyiceberg.types import DoubleType, IntegerType, LongType, NestedField, StringType, TimestampType
 
 TYPE_ICEBERG = {
     "int": IntegerType(),
@@ -146,6 +147,9 @@ def montar_schema_iceberg() -> Schema:
         NestedField(field_id=i, name=destino, field_type=TYPE_ICEBERG[tipo], required=False)
         for i, (_origem, destino, tipo) in enumerate(COLUMNS, start=1)
     ]
+    campos.append(
+        NestedField(field_id=len(campos) + 1, name="dt_ingestao", field_type=TimestampType(), required=False)
+    )
     return Schema(*campos)
 
 
@@ -156,7 +160,13 @@ def garantir_tabela(catalog):
         catalog.create_namespace(namespace)
     if catalog.table_exists(TABLE_NAME):
         print(f"[loader] Tabela {TABLE_NAME} já existe, anexando dados.")
-        return catalog.load_table(TABLE_NAME)
+        tabela = catalog.load_table(TABLE_NAME)
+        if "dt_ingestao" not in tabela.schema().column_names:
+            print("[loader] Evoluindo schema: adicionando dt_ingestao (linhas antigas ficam NULL)...")
+            with tabela.update_schema() as update:
+                update.add_column("dt_ingestao", TimestampType())
+            tabela = catalog.load_table(TABLE_NAME)
+        return tabela
     print(f"[loader] Criando tabela {TABLE_NAME}...")
     return catalog.create_table(TABLE_NAME, schema=montar_schema_iceberg())
 
@@ -170,9 +180,13 @@ def main():
     catalog = load_catalog("morfeu", **CATALOG_PROPS)
     tabela = garantir_tabela(catalog)
 
+    agora = datetime.now(timezone.utc).replace(tzinfo=None)
     origem_cols = [c[0] for c in COLUMNS]
     dtype = {origem: TYPE_PANDAS[tipo] for origem, _destino, tipo in COLUMNS if TYPE_PANDAS[tipo]}
-    arrow_schema = pa.schema([(destino, TYPE_PYARROW[tipo]) for _o, destino, tipo in COLUMNS])
+    arrow_schema = pa.schema(
+        [(destino, TYPE_PYARROW[tipo]) for _o, destino, tipo in COLUMNS]
+        + [("dt_ingestao", pa.timestamp("us"))]
+    )
     renomeia = {origem: destino for origem, destino, _tipo in COLUMNS}
     ordem_final = [destino for _o, destino, _t in COLUMNS]
 
@@ -193,6 +207,7 @@ def main():
             if MAX_ROWS and total + len(chunk) > MAX_ROWS:
                 chunk = chunk.iloc[: MAX_ROWS - total]
             chunk = chunk.rename(columns=renomeia)[ordem_final]
+            chunk["dt_ingestao"] = agora
             tabela_arrow = pa.Table.from_pandas(chunk, schema=arrow_schema, preserve_index=False)
             tabela.append(tabela_arrow)
             total += len(chunk)
