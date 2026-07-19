@@ -41,7 +41,9 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.fs as pafs
 from pyiceberg.catalog import load_catalog
+from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
+from pyiceberg.transforms import IdentityTransform
 from pyiceberg.types import DoubleType, IntegerType, LongType, NestedField, StringType, TimestampType
 
 TYPE_ICEBERG = {
@@ -150,7 +152,15 @@ def montar_schema_iceberg() -> Schema:
     campos.append(
         NestedField(field_id=len(campos) + 1, name="dt_ingestao", field_type=TimestampType(), required=False)
     )
+    campos.append(
+        NestedField(field_id=len(campos) + 1, name="dt_particao", field_type=StringType(), required=False)
+    )
     return Schema(*campos)
+
+
+def montar_partition_spec(schema: Schema) -> PartitionSpec:
+    campo = schema.find_field("dt_particao")
+    return PartitionSpec(PartitionField(source_id=campo.field_id, field_id=1000, transform=IdentityTransform(), name="dt_particao"))
 
 
 def garantir_tabela(catalog):
@@ -161,14 +171,17 @@ def garantir_tabela(catalog):
     if catalog.table_exists(TABLE_NAME):
         print(f"[loader] Tabela {TABLE_NAME} já existe, anexando dados.")
         tabela = catalog.load_table(TABLE_NAME)
-        if "dt_ingestao" not in tabela.schema().column_names:
-            print("[loader] Evoluindo schema: adicionando dt_ingestao (linhas antigas ficam NULL)...")
-            with tabela.update_schema() as update:
+        with tabela.update_schema() as update:
+            if "dt_ingestao" not in tabela.schema().column_names:
+                print("[loader] Evoluindo schema: adicionando dt_ingestao (linhas antigas ficam NULL)...")
                 update.add_column("dt_ingestao", TimestampType())
-            tabela = catalog.load_table(TABLE_NAME)
-        return tabela
-    print(f"[loader] Criando tabela {TABLE_NAME}...")
-    return catalog.create_table(TABLE_NAME, schema=montar_schema_iceberg())
+            if "dt_particao" not in tabela.schema().column_names:
+                print("[loader] Evoluindo schema: adicionando dt_particao (linhas antigas ficam NULL)...")
+                update.add_column("dt_particao", StringType())
+        return catalog.load_table(TABLE_NAME)
+    print(f"[loader] Criando tabela {TABLE_NAME} particionada por dt_particao...")
+    schema = montar_schema_iceberg()
+    return catalog.create_table(TABLE_NAME, schema=schema, partition_spec=montar_partition_spec(schema))
 
 
 def main():
@@ -181,11 +194,12 @@ def main():
     tabela = garantir_tabela(catalog)
 
     agora = datetime.now(timezone.utc).replace(tzinfo=None)
+    dt_particao_valor = agora.strftime("%Y-%m-%d")
     origem_cols = [c[0] for c in COLUMNS]
     dtype = {origem: TYPE_PANDAS[tipo] for origem, _destino, tipo in COLUMNS if TYPE_PANDAS[tipo]}
     arrow_schema = pa.schema(
         [(destino, TYPE_PYARROW[tipo]) for _o, destino, tipo in COLUMNS]
-        + [("dt_ingestao", pa.timestamp("us"))]
+        + [("dt_ingestao", pa.timestamp("us")), ("dt_particao", pa.string())]
     )
     renomeia = {origem: destino for origem, destino, _tipo in COLUMNS}
     ordem_final = [destino for _o, destino, _t in COLUMNS]
@@ -208,6 +222,7 @@ def main():
                 chunk = chunk.iloc[: MAX_ROWS - total]
             chunk = chunk.rename(columns=renomeia)[ordem_final]
             chunk["dt_ingestao"] = agora
+            chunk["dt_particao"] = dt_particao_valor
             tabela_arrow = pa.Table.from_pandas(chunk, schema=arrow_schema, preserve_index=False)
             tabela.append(tabela_arrow)
             total += len(chunk)

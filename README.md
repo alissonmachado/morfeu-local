@@ -280,14 +280,16 @@ quase 12M linhas). Por isso entram por uma trilha própria, em lote, sem Kafka.
    de cada dataset (mapeamento coluna → campo → tipo) fica versionado em
    `loader/schemas/*.json` — se a ANATEL mudar o layout do CSV, é só editar o
    JSON, não o código Python. Toda tabela ganha uma coluna `dt_ingestao`
-   (timestamp de quando a linha foi carregada — mesmo metadado de
-   rastreabilidade que o Flink grava em `topologia_rede`; o loader evolui o
-   schema automaticamente se a tabela já existir sem essa coluna). As 4
-   tabelas foram recarregadas do zero para que `dt_ingestao` refletisse o
-   momento real da carga em toda linha, em vez de um valor aproximado nas
-   linhas anteriores à existência da coluna. Para os datasets maiores
-   (telefonia móvel em especial), pare `trino` e o `flink` antes de rodar a
-   carga — ver [Rancher Desktop](#rancher-desktop).
+   (timestamp de quando a linha foi carregada) e é **particionada por
+   `dt_particao`** (data da carga em `yyyy-MM-dd`) — mesmo par de metadados
+   de rastreabilidade que o Flink já grava em `topologia_rede`, só que aqui
+   derivado do momento da carga em lote, não do timestamp de um evento. O
+   loader evolui o schema automaticamente se a tabela já existir sem essas
+   colunas, mas o particionamento em si só é aplicado na criação — as 4
+   tabelas foram recarregadas do zero para sair já particionadas e com
+   `dt_ingestao` real em toda linha, em vez de um valor aproximado. Para os
+   datasets maiores (telefonia móvel em especial), pare `trino` e o `flink`
+   antes de rodar a carga — ver [Rancher Desktop](#rancher-desktop).
 
 4. **Auditoria do raw.** Antes de processar, o loader copia o CSV
    efetivamente lido (não o `.zip` inteiro — só o membro do ano/semestre
@@ -534,6 +536,28 @@ infraestrutura instável, a decisão foi recarregar as 4 tabelas do zero: mais
 lento, mas dá `dt_ingestao` real em toda linha em vez de um valor aproximado,
 e não depende de uma operação longa sobrevivendo a um ambiente que estava
 caindo.
+
+**Particionamento por `dt_particao`, não por `ano`/`mês` da fonte.** A
+primeira ideia para particionar as 4 tabelas do loader foi usar `ano`/`mês`
+(colunas que já vêm do CSV da ANATEL). A escolha final foi replicar o padrão
+já usado em `topologia_rede`: uma coluna `dt_particao` derivada do momento
+da carga, não do dado em si. Isso mantém os dois caminhos de ingestão
+consistentes entre si e evita um problema real do particionamento por
+ano/mês aqui: `acessos_telefonia_movel` só tem um semestre carregado, e
+`acessos_banda_larga_fixa` só um ano — particionar por uma dimensão que
+ainda não varia não ajuda em nada agora, e passa a ajudar sozinho quando
+datasets futuros (outros anos/semestres) forem carregados como partições
+adicionais.
+
+**Rebuild de imagem quebrado pelo mesmo problema de rede de sempre, contornado com bind mount.** Ao alterar o `carga_lote.py` para adicionar o
+particionamento, o `docker compose build` voltou a falhar no mesmo
+`i/o timeout` do Docker Hub já visto nesta sessão. Em vez de esperar a
+rede normalizar, testei e recarreguei as 4 tabelas montando o script
+atualizado por cima da imagem já buildada (`docker compose run -v
+.../carga_lote.py:/app/carga_lote.py ...`) — evita depender da rede para
+iterar em código Python que não muda dependências. Assim que a rede voltou,
+rodei o build de verdade para a imagem publicada não ficar dessincronizada
+do que rodou de fato.
 
 ## Fonte de dados e base legal
 
